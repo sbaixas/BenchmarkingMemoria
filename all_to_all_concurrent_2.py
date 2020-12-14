@@ -1,7 +1,7 @@
 from mpi4py import MPI
 import os
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 import numpy as np
 from PIL import Image
 
@@ -10,27 +10,38 @@ rank = comm.Get_rank()
 size = comm.Get_size()
 chunk_size = int(sys.argv[1])
 data = bytearray(os.urandom(chunk_size))
-s_times = []
-r_times = []
+s_times = [0] * size
+r_times = [0] * size
+
+done = [[True if i == j else False for i in range(size)] for j in range(size)]
+ready = False
 
 if rank == 0:
     start = datetime.now()
 
-
-for i in range(size):
-    if rank == i:
-        comm.barrier()
+while not ready:
+    occupied = [False for i in range(size)]
+    for i in range(size):
         for j in range(size):
-            if i != j:
-                s_times.append(datetime.now())
-                comm.send(data, dest=j, tag=11)
-            else:
-                s_times.append(0)
-                r_times.append(0)
-    else:
-        comm.barrier()
-        comm.recv(source=i, tag=11)
-        r_times.append(datetime.now())
+            comm.barrier()
+            if not (done[i][j] or occupied[i] or occupied[j]):
+                if rank == i:
+                    s_times[j] = datetime.now()
+                    comm.send(data, dest=j, tag=11)
+                if rank == j:
+                    comm.recv(source=i, tag=11)
+                    r_times[i] = datetime.now()
+                occupied[i] = True
+                occupied[j] = True
+                done[i][j] = True
+                break
+
+    ready = True
+    for i in range(size):
+        for j in range(size):
+            if not done[i][j]:
+                ready = False
+                break
 
 node_result = [s_times, r_times]
 
@@ -45,10 +56,12 @@ if rank == 0:
         sent_times = result_data[r][0]
         for s in range(len(sent_times)):
             time_delta = result_data[s][1][r] - sent_times[s]
-            if r == s:
+            if type(time_delta) is not int:
+                time_delta = time_delta.total_seconds()
+            if time_delta == 0:
                 speed = "inf"
             else:
-                speed = chunk_size / time_delta.total_seconds()
+                speed = chunk_size / time_delta
                 if speed > greatest_speed:
                     greatest_speed = speed
                 if speed < lowest_speed:
@@ -69,6 +82,4 @@ if rank == 0:
     img = Image.fromarray(data)
     new_size = (300, 300)
     img = img.resize(new_size, resample=Image.NEAREST)
-    img.show()
-
-
+    img.save("concurrent.png")
